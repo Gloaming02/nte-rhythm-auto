@@ -103,96 +103,123 @@ class RhythmDetector:
         frame_bgr: NDArray[np.uint8],
         layout: LaneLayout,
     ) -> tuple[list[bool], list[NDArray[np.uint8]], list[int]]:
-        """
-        返回 (四条轨道本帧是否应触发, 每条轨道的判定带掩膜, 每条轨道判定带内匹配像素数)。
-        """
         hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
         now = time.perf_counter()
-        triggers: list[bool] = []
-        masks: list[NDArray[np.uint8]] = []
-        pixels: list[int] = []
 
-        for i in range(4):
-            if not self._enabled_lanes[i]:
-                triggers.append(False)
-                masks.append(np.zeros((1, 1), dtype=np.uint8))
-                pixels.append(0)
-                continue
+        disabled_indices = [i for i in range(4) if not self._enabled_lanes[i]]
+        simple_indices = [i for i in range(4) if self._enabled_lanes[i] and not self._component_lanes[i]]
+        component_indices = [i for i in range(4) if self._enabled_lanes[i] and self._component_lanes[i]]
 
-            x0, x1, y0, y1 = lane_judge_slice(layout, i)
-            judge_y0, judge_y1 = y0, y1
-            if self._component_lanes[i]:
-                lookahead_px = self._component_lookahead_px_for(layout)
-                past_px = self._component_past_px_for(layout)
-                y0 = max(0, judge_y0 - lookahead_px)
-                y1 = min(layout.frame_h, judge_y1 + past_px)
-                cx = lane_center_x_at_y(layout, i, (y0 + y1) // 2)
-                x0 = max(0, cx - layout.half_width_px)
-                x1 = min(layout.frame_w, cx + layout.half_width_px)
-            if x1 <= x0 or y1 <= y0:
-                triggers.append(False)
-                masks.append(np.zeros((1, 1), dtype=np.uint8))
-                pixels.append(0)
-                continue
+        results: dict[int, tuple[bool, NDArray[np.uint8], int]] = {}
 
-            roi_hsv = hsv[y0:y1, x0:x1]
-            r = self._ranges[i]
-            lo = (r["h_min"], r["s_min"], r["v_min"])
-            hi = (r["h_max"], r["s_max"], r["v_max"])
-            mask = _hsv_mask(roi_hsv, lo, hi)
+        for i in disabled_indices:
+            results[i] = (False, np.zeros((1, 1), dtype=np.uint8), 0)
 
-            # 红色在 OpenCV HSV 可能跨 0 度：若配置了 h2，则合并第二段
-            h2_min = r.get("h2_min")
-            h2_max = r.get("h2_max")
-            if h2_min is not None and h2_max is not None:
-                m2 = _hsv_mask(
-                    roi_hsv,
-                    (int(h2_min), int(r["s_min"]), int(r["v_min"])),
-                    (int(h2_max), int(r["s_max"]), int(r["v_max"])),
-                )
-                mask = cv2.bitwise_or(mask, m2)
+        for i in simple_indices:
+            results[i] = self._detect_simple(i, hsv, layout, now)
 
-            if self.morph_k >= 3:
-                k = cv2.getStructuringElement(
-                    cv2.MORPH_ELLIPSE,
-                    (self.morph_k, self.morph_k),
-                )
-                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+        for i in component_indices:
+            results[i] = self._detect_component(i, hsv, layout, now)
 
-            st = self._states[i]
-            thr = self.min_pixels_for_lane(i)
-            cooldown_sec = self._cooldown_by_lane[i]
-            if self._component_lanes[i]:
-                fire, cnt = self._analyze_components(mask, st, layout, y0, judge_y0, judge_y1, now)
-                pixels.append(cnt)
-                triggers.append(fire)
-                masks.append(mask)
-                continue
-
-            cnt = int(cv2.countNonZero(mask))
-            pixels.append(cnt)
-            fire = False
-            if cnt >= thr and (now - st.last_fire) >= cooldown_sec:
-                fire = True
-                st.last_fire = now
-            elif (
-                self._log_cooldown_debug
-                and cnt >= thr
-                and (now - st.last_fire) < cooldown_sec
-                and (now - st.last_cooldown_log_time) >= 0.15
-            ):
-                st.last_cooldown_log_time = now
-                logger.debug(
-                    "轨道%d: HSV 匹配像素=%d (>=阈值 %d) 但在冷却中，距上次触发 %.3fs",
-                    i + 1,
-                    cnt,
-                    thr,
-                    now - st.last_fire,
-                )
-            triggers.append(fire)
-            masks.append(mask)
-
+        triggers = [results[i][0] for i in range(4)]
+        masks = [results[i][1] for i in range(4)]
+        pixels = [results[i][2] for i in range(4)]
         return triggers, masks, pixels
+
+    def _detect_simple(
+        self,
+        i: int,
+        hsv: NDArray[np.uint8],
+        layout: LaneLayout,
+        now: float,
+    ) -> tuple[bool, NDArray[np.uint8], int]:
+        x0, x1, y0, y1 = lane_judge_slice(layout, i)
+        if x1 <= x0 or y1 <= y0:
+            return False, np.zeros((1, 1), dtype=np.uint8), 0
+        roi_hsv = hsv[y0:y1, x0:x1]
+        r = self._ranges[i]
+        lo = (r["h_min"], r["s_min"], r["v_min"])
+        hi = (r["h_max"], r["s_max"], r["v_max"])
+        mask = _hsv_mask(roi_hsv, lo, hi)
+        h2_min = r.get("h2_min")
+        h2_max = r.get("h2_max")
+        if h2_min is not None and h2_max is not None:
+            m2 = _hsv_mask(
+                roi_hsv,
+                (int(h2_min), int(r["s_min"]), int(r["v_min"])),
+                (int(h2_max), int(r["s_max"]), int(r["v_max"])),
+            )
+            mask = cv2.bitwise_or(mask, m2)
+        if self.morph_k >= 3:
+            k = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (self.morph_k, self.morph_k),
+            )
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+        st = self._states[i]
+        thr = self.min_pixels_for_lane(i)
+        cooldown_sec = self._cooldown_by_lane[i]
+        cnt = int(cv2.countNonZero(mask))
+        fire = False
+        if cnt >= thr and (now - st.last_fire) >= cooldown_sec:
+            fire = True
+            st.last_fire = now
+        elif (
+            self._log_cooldown_debug
+            and cnt >= thr
+            and (now - st.last_fire) < cooldown_sec
+            and (now - st.last_cooldown_log_time) >= 0.15
+        ):
+            st.last_cooldown_log_time = now
+            logger.debug(
+                "轨道%d: HSV 匹配像素=%d (>=阈值 %d) 但在冷却中，距上次触发 %.3fs",
+                i + 1,
+                cnt,
+                thr,
+                now - st.last_fire,
+            )
+        return fire, mask, cnt
+
+    def _detect_component(
+        self,
+        i: int,
+        hsv: NDArray[np.uint8],
+        layout: LaneLayout,
+        now: float,
+    ) -> tuple[bool, NDArray[np.uint8], int]:
+        x0, x1, judge_y0, judge_y1 = lane_judge_slice(layout, i)
+        lookahead_px = self._component_lookahead_px_for(layout)
+        past_px = self._component_past_px_for(layout)
+        y0 = max(0, judge_y0 - lookahead_px)
+        y1 = min(layout.frame_h, judge_y1 + past_px)
+        cx = lane_center_x_at_y(layout, i, (y0 + y1) // 2)
+        x0 = max(0, cx - layout.half_width_px)
+        x1 = min(layout.frame_w, cx + layout.half_width_px)
+        if x1 <= x0 or y1 <= y0:
+            return False, np.zeros((1, 1), dtype=np.uint8), 0
+        roi_hsv = hsv[y0:y1, x0:x1]
+        r = self._ranges[i]
+        lo = (r["h_min"], r["s_min"], r["v_min"])
+        hi = (r["h_max"], r["s_max"], r["v_max"])
+        mask = _hsv_mask(roi_hsv, lo, hi)
+        h2_min = r.get("h2_min")
+        h2_max = r.get("h2_max")
+        if h2_min is not None and h2_max is not None:
+            m2 = _hsv_mask(
+                roi_hsv,
+                (int(h2_min), int(r["s_min"]), int(r["v_min"])),
+                (int(h2_max), int(r["s_max"]), int(r["v_max"])),
+            )
+            mask = cv2.bitwise_or(mask, m2)
+        if self.morph_k >= 3:
+            k = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (self.morph_k, self.morph_k),
+            )
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+        st = self._states[i]
+        fire, cnt = self._analyze_components(mask, st, layout, y0, judge_y0, judge_y1, now)
+        return fire, mask, cnt
 
     def _analyze_components(
         self,
