@@ -242,6 +242,10 @@ def run_loop(
 
             triggers, masks, pixels = detector.analyze(frame, layout)
 
+            fire_times = dispatcher.drain_fire_times()
+            if fire_times:
+                detector.update_fire_times(fire_times)
+
             log_now = time.perf_counter()
             if px_log_iv > 0 and (log_now - last_px_log) >= px_log_iv:
                 last_px_log = log_now
@@ -283,7 +287,8 @@ def run_loop(
                 )
                 press_counts[i] += 1
             if triggered:
-                dispatcher.dispatch(triggered)
+                target_time = time.perf_counter() + sender._delay
+                dispatcher.dispatch(triggered, target_time)
 
             frame_elapsed = time.perf_counter() - t0
             inst_fps = 1.0 / max(frame_elapsed, 1e-6)
