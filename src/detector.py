@@ -98,6 +98,11 @@ class RhythmDetector:
         o = self._min_by_lane[lane_index] if lane_index < len(self._min_by_lane) else None
         return int(o) if o is not None else self.min_pixels
 
+    def update_fire_times(self, fire_times: dict[int, float]) -> None:
+        for lane, t in fire_times.items():
+            if 0 <= lane < len(self._states):
+                self._states[lane].last_fire = t
+
     def analyze(
         self,
         frame_bgr: NDArray[np.uint8],
