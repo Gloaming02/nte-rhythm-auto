@@ -38,13 +38,8 @@ class KeySender:
         self._hwnd = hwnd
         self._win32_dispatch = str(keys_cfg.get("win32_dispatch", "post")).lower()
         self._fake_activate = bool(keys_cfg.get("fake_activate", True))
-
-        if self._mode == "foreground":
-            from pynput.keyboard import Controller
-
-            self._kb = Controller()
-        else:
-            self._kb = None
+        self._kb: Any = None
+        self._kb_lock = threading.Lock()
 
     def maybe_fake_activate(self) -> None:
         if self._mode != "background" or not self._hwnd or not self._fake_activate:
@@ -53,6 +48,16 @@ class KeySender:
             win32gui.SendMessage(self._hwnd, win32con.WM_ACTIVATE, win32con.WA_ACTIVE, 0)
         except Exception as e:
             logger.debug("fake_activate: %s", e)
+
+    def _ensure_kb(self) -> Any:
+        if self._kb is not None:
+            return self._kb
+        with self._kb_lock:
+            if self._kb is not None:
+                return self._kb
+            from pynput.keyboard import Controller
+            self._kb = Controller()
+            return self._kb
 
     def lane_key_name(self, lane_index: int) -> str:
         return self._lanes[lane_index]
@@ -74,7 +79,7 @@ class KeySender:
                 logger.error("后台 KEYDOWN 失败: %s", e)
             return
         try:
-            self._kb.press(key)
+            self._ensure_kb().press(key)
         except Exception as e:
             logger.error("pynput KEYDOWN 失败: %s", e)
 
@@ -94,7 +99,7 @@ class KeySender:
                 logger.error("后台 KEYUP 失败: %s", e)
             return
         try:
-            self._kb.release(key)
+            self._ensure_kb().release(key)
         except Exception as e:
             logger.error("pynput KEYUP 失败: %s", e)
 
@@ -142,8 +147,7 @@ class AsyncKeyDispatcher:
 
     def _worker(self) -> None:
         if self._sender._mode == "foreground":
-            from pynput.keyboard import Controller
-            self._sender._kb = Controller()
+            self._sender._ensure_kb()
 
         while True:
             batch = self._queue.get()
