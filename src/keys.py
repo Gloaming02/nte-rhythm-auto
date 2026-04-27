@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 import time
+from collections import deque
 from typing import Any
 
 import win32api
@@ -121,26 +121,55 @@ class KeySender:
         )
 
 
-class AsyncKeyDispatcher:
-    _SENTINEL = None
+class _BatchItem:
+    __slots__ = ("lanes", "target_time")
 
+    def __init__(self, lanes: set[int], target_time: float) -> None:
+        self.lanes = lanes
+        self.target_time = target_time
+
+
+class AsyncKeyDispatcher:
     def __init__(self, sender: KeySender) -> None:
         self._sender = sender
-        self._queue: queue.Queue[list[int] | None] = queue.Queue(maxsize=8)
+        self._deque: deque[_BatchItem] = deque()
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stopped = False
+        self._fire_time_queue: deque[dict[int, float]] = deque()
         self._thread = threading.Thread(target=self._worker, name="nte-key-dispatcher", daemon=True)
         self._thread.start()
 
-    def dispatch(self, lane_indices: list[int]) -> None:
-        try:
-            self._queue.put_nowait(lane_indices)
-        except queue.Full:
-            logger.warning("按键队列已满（%d 轨道触发被丢弃），检测帧可能跑在按键前面", len(lane_indices))
+    def dispatch(self, lane_indices: list[int], target_time: float | None = None) -> None:
+        if target_time is None:
+            target_time = time.perf_counter() + self._sender._delay
+        lanes_set = set(lane_indices)
+        with self._lock:
+            if self._deque:
+                last = self._deque[-1]
+                if last.target_time == target_time:
+                    last.lanes.update(lanes_set)
+                else:
+                    self._deque.append(_BatchItem(lanes_set, target_time))
+            else:
+                self._deque.append(_BatchItem(lanes_set, target_time))
+        self._wake.set()
+
+    def drain_fire_times(self) -> dict[int, float]:
+        items: list[dict[int, float]] = []
+        with self._lock:
+            while self._fire_time_queue:
+                items.append(self._fire_time_queue.popleft())
+        merged: dict[int, float] = {}
+        for ft in items:
+            for lane, t in ft.items():
+                if lane not in merged or t > merged[lane]:
+                    merged[lane] = t
+        return merged
 
     def stop(self) -> None:
-        try:
-            self._queue.put_nowait(self._SENTINEL)
-        except queue.Full:
-            pass
+        self._stopped = True
+        self._wake.set()
 
     def join(self, timeout: float = 2.0) -> None:
         self._thread.join(timeout=timeout)
@@ -150,23 +179,36 @@ class AsyncKeyDispatcher:
             self._sender._ensure_kb()
 
         while True:
-            batch = self._queue.get()
-            if batch is self._SENTINEL:
+            self._wake.wait()
+            self._wake.clear()
+            if self._stopped:
                 break
-            self._execute_batch(batch)
+            while True:
+                with self._lock:
+                    if not self._deque:
+                        break
+                    item = self._deque.popleft()
+                self._execute_batch(item)
 
-    def _execute_batch(self, lane_indices: list[int]) -> None:
+    def _execute_batch(self, item: _BatchItem) -> None:
         sender = self._sender
-        if sender._delay > 0:
-            time.sleep(sender._delay)
-        for i in lane_indices:
+        now = time.perf_counter()
+        wait = item.target_time - now
+        if wait > 0:
+            time.sleep(wait)
+        sorted_lanes = sorted(item.lanes)
+        fire_times: dict[int, float] = {}
+        for i in sorted_lanes:
             sender.send_keydown(i)
+            fire_times[i] = time.perf_counter()
         time.sleep(sender._hold)
-        for i in lane_indices:
+        for i in sorted_lanes:
             sender.send_keyup(i)
+        with self._lock:
+            self._fire_time_queue.append(fire_times)
         logger.debug(
             "批量按键 %d 轨: %s hold=%.3fs",
-            len(lane_indices),
-            [sender.lane_key_name(i) for i in lane_indices],
+            len(sorted_lanes),
+            [sender.lane_key_name(i) for i in sorted_lanes],
             sender._hold,
         )
