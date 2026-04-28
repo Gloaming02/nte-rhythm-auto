@@ -103,6 +103,11 @@ class RhythmDetector:
             if 0 <= lane < len(self._states):
                 self._states[lane].last_fire = t
 
+    def reserve_fire_times(self, lane_indices: list[int], target_time: float) -> None:
+        for lane in lane_indices:
+            if 0 <= lane < len(self._states):
+                self._states[lane].last_fire = target_time
+
     def analyze(
         self,
         frame_bgr: NDArray[np.uint8],

@@ -268,6 +268,7 @@ def run_loop(
                         "进入四键节奏页后会自动开始；若已进入仍不按键，可调 configs/default.yaml -> presence。"
                     )
                     suppress_hint_logged = True
+                dispatcher.clear()
             elif armed:
                 suppress_hint_logged = False
 
@@ -288,6 +289,7 @@ def run_loop(
                 press_counts[i] += 1
             if triggered:
                 target_time = time.perf_counter() + sender._delay
+                detector.reserve_fire_times(triggered, target_time)
                 dispatcher.dispatch(triggered, target_time)
 
             frame_elapsed = time.perf_counter() - t0

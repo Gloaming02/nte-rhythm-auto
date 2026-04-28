@@ -129,6 +129,9 @@ class _BatchItem:
         self.target_time = target_time
 
 
+_EXPIRY_TOLERANCE_SEC = 0.05
+
+
 class AsyncKeyDispatcher:
     def __init__(self, sender: KeySender) -> None:
         self._sender = sender
@@ -167,6 +170,11 @@ class AsyncKeyDispatcher:
                     merged[lane] = t
         return merged
 
+    def clear(self) -> None:
+        with self._lock:
+            self._deque.clear()
+            self._fire_time_queue.clear()
+
     def stop(self) -> None:
         self._stopped = True
         self._wake.set()
@@ -193,6 +201,9 @@ class AsyncKeyDispatcher:
     def _execute_batch(self, item: _BatchItem) -> None:
         sender = self._sender
         now = time.perf_counter()
+        if now - item.target_time > _EXPIRY_TOLERANCE_SEC:
+            logger.debug("丢弃过期 batch: %d 轨, 延迟 %.3fs", len(item.lanes), now - item.target_time)
+            return
         wait = item.target_time - now
         if wait > 0:
             time.sleep(wait)
