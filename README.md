@@ -61,7 +61,7 @@ pip install -r requirements.txt
 
 本仓库是**精简脚本**：截图默认走 **WGC**；按键默认走 **`keys.mode: foreground`**（`pynput` 前台按键）。异环/UE 对 `PostMessage` / `SendMessage` 后台键消息不稳定，当前推荐保持游戏前台运行。
 
-**鼠标**：当前节奏逻辑**不模拟鼠标**；若以后做钓鱼等再单独加。
+**鼠标**：自动选歌功能使用鼠标点击与滚动（前台 pynput / 后台 Win32 SendMessage），节奏演奏本身不模拟鼠标。
 
 ## 配置
 
@@ -72,6 +72,8 @@ pip install -r requirements.txt
 - `hsv_ranges`：每条轨道音符环的大致 HSV 范围，可按 `test-image` 输出图微调
 - `keys.mode`：默认 **`foreground`**（pynput 前台输入）；`background` 为 HWND 消息模式，异环/UE 不一定响应
 - `keys.press_delay_sec` / `keys.key_hold_sec`：不同设备可调的按键延迟与保持时间；GUI 中以秒显示
+- `scene.template_match_enabled`：启用 **场景模板匹配**（识别 song_select / results）
+- `scene.song_select_match_threshold` / `scene.results_match_threshold` / `scene.playing_match_threshold`：模板匹配阈值（0~1）
 
 > 键位锁死为 **D / F / J / K**，配置文件不再支持自定义按键。
 
@@ -128,6 +130,7 @@ pip install pyinstaller
 pyinstaller --noconfirm --clean --onefile --windowed --uac-admin `
   --name nte-rhythm-auto `
   --add-data "configs\default.yaml;configs" `
+  --add-data "assets;assets" `
   run_gui.py
 ```
 
@@ -137,6 +140,8 @@ pyinstaller --noconfirm --clean --onefile --windowed --uac-admin `
 
 - `nte-rhythm-auto.exe`
 - `configs/default.yaml`
+- `assets/song_templates/`（歌曲模板图片目录）
+- `assets/scene_templates/`（场景模板图片目录）
 - `README.md`
 
 ## 日志说明
@@ -150,22 +155,37 @@ pyinstaller --noconfirm --clean --onefile --windowed --uac-admin `
 
 若已进入节奏页仍长期显示「锁定」，可适当**降低** `min_laplace_variance`，或微调 `drum_center_y_frac` / `lanes.center_x_frac` 与鼓圈对齐。不需要模板截图；若要改成「与参考图对比」，可再单独加模板匹配功能。
 
+## 场景模板匹配（可选）
+
+为了更稳定地区分 **选歌** / **结算** / **演奏** 场景，可启用模板匹配：
+
+- 选歌模板目录：`assets/scene_templates/song_select/`
+- 结算模板目录：`assets/scene_templates/results/`
+- 演奏模板目录：`assets/scene_templates/playing/`
+
+配置里开启 `scene.template_match_enabled: true` 并适当调整阈值。
+
 ### 进入节奏页后一直按 F？
 
 第二轨多为黄/金色，**判定带若盖住鼓面或光晕**，会一直满足 F 的 HSV。默认已做缓解：`F` 不启用组件识别，且 `judge_line_y_frac_by_lane` 中 F 轨单独上移。若仍误触：继续上移 F 的判定线或收紧 F 的 HSV；若真音符漏按，再小幅下移 F 判定线。
 
 ## 项目结构
 
-```
+```text
 configs/default.yaml   # 默认参数
+assets/song_templates/ # 歌曲模板图片（文件名即歌曲名，不含扩展名）
+assets/scene_templates/ # 场景模板图片（song_select / results / playing）
 src/
   main.py              # CLI 与主循环
   window.py            # 查找 HTGame.exe + UnrealWindow
   capture.py           # WGC / win32 / mss 截图
   lanes.py             # 比例坐标 -> 像素 ROI
   detector.py          # HSV 掩膜与冷却触发
-  presence.py          # 四鼓在位门控（未进节奏页不按键）
+  presence.py          # 场景状态分类（OTHER/SONG_SELECT/PLAYING/RESULTS）
   keys.py              # 前台/后台按键
+  mouse.py             # 前台/后台鼠标点击与滚动
+  song_selector.py     # 自动选歌（模板匹配 + 滚动搜索）
+  assets.py            # 资源路径解析（兼容开发/PyInstaller）
 ```
 
 ## 参考

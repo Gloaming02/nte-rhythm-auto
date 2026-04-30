@@ -71,6 +71,7 @@ hsv_ranges:
     v_max: 255
 
 # 节奏界面门控：未检测到四个鼓位 UI 时一律不按键，避免主界面误触 F 等
+# 第二层帧间动态检测：演奏界面音符持续下落→高动态；结束界面/选歌界面→静态→不按键
 presence:
   enabled: true
   # 鼓面采样中心 y（0~1），略低于判定线、贴近鼓圈
@@ -85,6 +86,71 @@ presence:
   arm_after_good_frames: 1
   # 连续多少帧不达标则重新禁止按键（离开节奏页）
   disarm_after_bad_frames: 5
+  # 帧间动态检测：演奏中音符下落导致持续帧间变化；结束/选歌界面静态无变化
+  dynamic_check_enabled: true
+  # 每条轨道观察条带内帧间像素变化率超过此值认为该轨有音符动态
+  dynamic_change_ratio_threshold: 0.012
+  # 至少多少条轨有动态才认为场景是「演奏中」（1 即任一轨有动态即可）
+  dynamic_min_active_lanes: 1
+  # absdiff 像素强度阈值（越低越敏感，12≈对轻微亮度波动也响应）
+  dynamic_absdiff_threshold: 12
+
+# 场景状态检测：识别 OTHER / SONG_SELECT / PLAYING / RESULTS 四种游戏界面
+# 子模块模板匹配：将 assets/scene_templates/<kind>/ 下每张图片视为独立子模块（按钮/图标/标签），
+# 在画面中逐一匹配，至少 match_vote_min 个命中则判定为对应场景。
+scene:
+  # 状态切换确认帧数（连续 N 帧检测到同一目标状态才切换，防抖）
+  state_confirm_frames: 2
+  # 场景子模块模板匹配开关
+  # 关闭时仅使用 Laplacian 鼓位检测判断 PLAYING 状态，性能开销极低
+  # 开启时加载 assets/scene_templates/ 下对应目录的子模块图片进行匹配
+  template_match_enabled: true
+  # 演奏中跳过模板匹配（true=PLAYING+armed 时仅靠 Laplacian 鼓位检测，零模板开销）
+  match_skip_playing: true
+  # 各场景子模块匹配阈值（0~1，越高越严格）
+  song_select_match_threshold: 0.75
+  results_match_threshold: 0.75
+  playing_match_threshold: 0.75
+  # 至少多少个子模块命中才判定为该场景（若模板不足，自动降到模板数量）
+  match_vote_min: 2
+  # 各场景匹配 ROI 限定（可选）：[x0, y0, x1, y1]，0~1 归一化坐标；留空表示整帧
+  song_select_roi:
+  results_roi:
+  playing_roi:
+  # 模糊核大小（奇数）；<3 表示不模糊
+  match_blur_ksize: 5
+  # 下采样比例（0.1~1.0）；1.0 表示不缩小
+  match_downscale: 0.5
+
+# 自动选歌：进入选歌界面后自动搜索目标歌曲并点击"开始演奏"
+# 「开始演奏」按钮通过模板匹配 assets/scene_templates/song_select/start.png 定位
+song_select:
+  enabled: false
+  # 目标歌曲名称（对应 assets/song_templates/ 目录下的模板图片文件名，不含扩展名）
+  song_name: ""
+  # 歌曲列表滚动区域中心（在此位置发送滚轮事件）
+  scroll_area_x_frac: 0.35
+  scroll_area_y_frac: 0.50
+  # 滚轮 delta（负值=向下滚动，正值=向上滚动）
+  scroll_delta: -3
+  # 最大滚动尝试次数（超过后放弃选歌）
+  max_scroll_attempts: 30
+  # 歌曲模板匹配置信度阈值（0~1，越高越严格）
+  match_threshold: 0.75
+  # 「开始演奏」按钮模板匹配阈值
+  start_match_threshold: 0.75
+  # 点击歌曲后的等待秒数（等待选中动画）
+  click_delay_sec: 0.5
+  # 点击"开始演奏"后的等待秒数
+  start_delay_sec: 0.8
+
+# 自动连打：结算界面自动发送 ESC 返回选歌，循环指定次数（需开启自动选歌）
+auto_repeat:
+  enabled: false
+  # 连打次数（选曲→演奏→结算 为一次）
+  count: 5
+  # 检测到结算界面后等待多少秒再发送 ESC（等待结算动画展示）
+  dismiss_delay_sec: 0.8
 
 detection:
   # 启用轨道：D/F/J/K
@@ -98,7 +164,7 @@ detection:
   component_history_sec: 0.25
   # 判定带内掩膜像素数超过此值认为有音符
   min_pixels_per_lane: 200
-  # 按轨单独阈值；F 轨按 J 轨同样逻辑处理，避免黄色音符临界时漏检
+  # 按轨单独阈值；F 轨黄色易吃静态鼓面，保持普通判定带逻辑
   min_pixels_by_lane: [200, 200, 200, 200]
   # 同一条轨道触发后的冷却（秒）
   cooldown_sec: 0.12
@@ -121,6 +187,8 @@ keys:
   fake_activate: true
   # 识别触发后额外等待多少秒再按键；不同机器可在 GUI 里调，默认 0
   press_delay_sec: 0.0
+  # 按轨独立延迟；F 轨判定线 (0.70) 比其他轨 (0.78) 靠上，需补偿延迟让音符落到实际 hit 区
+  press_delay_sec_by_lane: [0.0, 0.08, 0.0, 0.0]
   key_hold_sec: 0.01
 
 run:

@@ -10,6 +10,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
 
+from src.assets import list_song_templates
 from src.config_loader import load_config
 from src.main import _setup_logging, run_loop
 
@@ -31,6 +32,10 @@ class RhythmAutoGUI:
         self.var_press_delay_sec = tk.StringVar(value="0.000")
         self.var_key_hold_sec = tk.StringVar(value="0.010")
         self.var_capture_interval_sec = tk.StringVar(value="0.011")
+        self.var_auto_select = tk.BooleanVar(value=False)
+        self.var_song_name = tk.StringVar(value="")
+        self.var_auto_repeat = tk.BooleanVar(value=False)
+        self.var_repeat_count = tk.StringVar(value="5")
         self.var_status = tk.StringVar(value="就绪。请先启动异环，再点「开始」。")
 
         self._build()
@@ -85,22 +90,65 @@ class RhythmAutoGUI:
             justify=tk.LEFT,
         ).grid(row=1, column=0, columnspan=6, sticky=tk.W, **pad)
 
+        song_box = ttk.LabelFrame(frm, text="自动选歌")
+        song_box.grid(row=4, column=0, columnspan=3, sticky=tk.EW, **pad)
+        ttk.Checkbutton(
+            song_box, text="启用自动选歌", variable=self.var_auto_select,
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, **pad)
+        ttk.Label(song_box, text="选择歌曲").grid(row=1, column=0, sticky=tk.W, **pad)
+        available_songs = [name for name, _ in list_song_templates()]
+        self._song_combo = ttk.Combobox(
+            song_box,
+            textvariable=self.var_song_name,
+            values=available_songs,
+            state="readonly" if available_songs else "disabled",
+            width=30,
+        )
+        self._song_combo.grid(row=1, column=1, sticky=tk.EW, **pad)
+        if available_songs:
+            self.var_song_name.set(available_songs[0])
+        ttk.Label(
+            song_box,
+            text="模板图片位于 assets/song_templates/ 目录。将目标歌曲的卡片/名称截图放入该目录，重启后即可在下拉框中选择。",
+            wraplength=620,
+            justify=tk.LEFT,
+        ).grid(row=2, column=0, columnspan=2, sticky=tk.W, **pad)
+        song_box.columnconfigure(1, weight=1)
+
+        repeat_box = ttk.LabelFrame(frm, text="自动连打")
+        repeat_box.grid(row=5, column=0, columnspan=3, sticky=tk.EW, **pad)
+        ttk.Checkbutton(
+            repeat_box, text="启用自动连打（选曲→演奏→结算→循环）",
+            variable=self.var_auto_repeat,
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, **pad)
+        ttk.Label(repeat_box, text="连打次数").grid(row=1, column=0, sticky=tk.W, **pad)
+        ttk.Entry(repeat_box, textvariable=self.var_repeat_count, width=10).grid(
+            row=1, column=1, sticky=tk.W, **pad
+        )
+        ttk.Label(
+            repeat_box,
+            text="结算界面会自动发送 ESC 返回选歌。需要开启自动选歌并指定歌曲。",
+            wraplength=620,
+            justify=tk.LEFT,
+        ).grid(row=2, column=0, columnspan=2, sticky=tk.W, **pad)
+        repeat_box.columnconfigure(1, weight=1)
+
         btn_row = ttk.Frame(frm)
-        btn_row.grid(row=4, column=0, columnspan=3, pady=12)
+        btn_row.grid(row=6, column=0, columnspan=3, pady=12)
         self.btn_start = ttk.Button(btn_row, text="开始", command=self._start)
         self.btn_start.pack(side=tk.LEFT, padx=6)
         self.btn_stop = ttk.Button(btn_row, text="停止", command=self._stop_worker, state=tk.DISABLED)
         self.btn_stop.pack(side=tk.LEFT, padx=6)
 
         status_box = ttk.LabelFrame(frm, text="状态")
-        status_box.grid(row=5, column=0, columnspan=3, sticky=tk.NSEW, **pad)
+        status_box.grid(row=7, column=0, columnspan=3, sticky=tk.NSEW, **pad)
         ttk.Label(status_box, textvariable=self.var_status, wraplength=660, justify=tk.LEFT).pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
-        ttk.Label(frm, text="提示：不同设备主要调“按键延迟 s / 按键保持 s / 截图间隔 s”。", foreground="#666").grid(
-            row=6, column=0, columnspan=3, sticky=tk.W, **pad
+        ttk.Label(frm, text="提示：不同设备主要调「按键延迟 s / 按键保持 s / 截图间隔 s」。", foreground="#666").grid(
+            row=8, column=0, columnspan=3, sticky=tk.W, **pad
         )
 
         frm.columnconfigure(1, weight=1)
-        frm.rowconfigure(5, weight=1)
+        frm.rowconfigure(7, weight=1)
 
     def _browse_config(self) -> None:
         p = filedialog.askopenfilename(
@@ -132,6 +180,17 @@ class RhythmAutoGUI:
         run_cfg = cfg.setdefault("run", {})
         interval_sec = self._parse_sec(self.var_capture_interval_sec, 0.011, 0.004, 0.033)
         run_cfg["target_fps"] = max(1, int(round(1 / interval_sec)))
+
+        song_cfg = cfg.setdefault("song_select", {})
+        auto_select = self.var_auto_select.get()
+        song_cfg["enabled"] = auto_select
+        song_name = self.var_song_name.get().strip()
+        if auto_select and song_name:
+            song_cfg["song_name"] = song_name
+
+        ar_cfg = cfg.setdefault("auto_repeat", {})
+        ar_cfg["enabled"] = self.var_auto_repeat.get()
+        ar_cfg["count"] = self._parse_int(self.var_repeat_count, 5, 1, 999)
 
     def _start(self) -> None:
         if self._worker is not None and self._worker.is_alive():
@@ -219,17 +278,33 @@ class RhythmAutoGUI:
         if isinstance(px, (list, tuple)) and len(px) >= 4:
             px_s = f" | 像素 D/F/J/K: {px[0]}/{px[1]}/{px[2]}/{px[3]}"
         armed = data.get("scene_armed")
+        scene_state = data.get("scene_state", "")
         scene_s = ""
         if armed is not None:
             po = data.get("scene_per_ok")
             lap = data.get("scene_lap")
+            tpl_ss_val = data.get("scene_tpl_ss_val", 0.0)
+            tpl_rs_val = data.get("scene_tpl_rs_val", 0.0)
+            tpl_pl_val = data.get("scene_tpl_pl_val", 0.0)
+            state_label = {
+                "other": "其他",
+                "song_select": "选歌",
+                "playing": "演奏中",
+                "results": "结算",
+            }.get(scene_state, scene_state)
             if isinstance(po, (list, tuple)) and isinstance(lap, (list, tuple)) and len(po) >= 4:
                 scene_s = (
-                    f"\n门控: {'已解锁可按键' if armed else '锁定中(不按键)'} | "
-                    f"四鼓位={list(po)} | Lap≈{list(lap)}"
+                    f"\n场景: {state_label} | 门控: {'已解锁可按键' if armed else '锁定中(不按键)'} | "
+                    f"四鼓位={list(po)} | Lap≈{list(lap)} | 子模块匹配≈{tpl_ss_val:.2f}/{tpl_rs_val:.2f}/{tpl_pl_val:.2f}"
                 )
             else:
-                scene_s = f"\n门控: {'已解锁可按键' if armed else '锁定中(不按键)'}"
+                scene_s = f"\n场景: {state_label} | 门控: {'已解锁可按键' if armed else '锁定中(不按键)'}"
+
+        sel_state = data.get("song_sel_state", "n/a")
+        sel_action = data.get("song_sel_action", "")
+        sel_s = ""
+        if sel_state not in ("n/a", "disabled", "idle"):
+            sel_s = f"\n选歌: 状态={sel_state} | 动作={sel_action}"
         capture_s = ""
         capture = data.get("capture")
         if isinstance(capture, dict) and capture.get("fallback_active"):
@@ -239,9 +314,12 @@ class RhythmAutoGUI:
                 "请保持游戏在最前面，不能被其它窗口遮挡。"
                 f"\n原因: {reason}"
             )
+        ar_s = ""
+        if data.get("ar_enabled") and data.get("ar_total", 0) > 0:
+            ar_s = f"\n连打: {data.get('ar_completed', 0)}/{data.get('ar_total', 0)}"
         self.var_status.set(
             f"运行中 | ~{fps:.0f} FPS | 画面 {w}x{h} | D/F/J/K 累计: {pr[0]}/{pr[1]}/{pr[2]}/{pr[3]}"
-            f"\n窗口: {title}{tr_s}{px_s}{scene_s}{capture_s}"
+            f"\n窗口: {title}{tr_s}{px_s}{scene_s}{sel_s}{ar_s}{capture_s}"
         )
 
     def _stop_worker(self) -> None:

@@ -15,9 +15,10 @@ import cv2
 
 
 def run_calibrate_image(image_path: Path, output_yaml: Path | None) -> int:
-    img = cv2.imread(str(image_path))
+    img_bytes = np.fromfile(str(image_path), dtype=np.uint8)
+    img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
     if img is None:
-        print(f"无法读取图像: {image_path}", file=sys.stderr)
+        print(f"无法读取图像：{image_path}", file=sys.stderr)
         return 2
 
     h, w = img.shape[:2]

@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 _LANES: tuple[str, str, str, str] = ("d", "f", "j", "k")
 _VK: dict[str, int] = {"d": 0x44, "f": 0x46, "j": 0x4A, "k": 0x4B}
+_VK_ESCAPE = 0x1B
 
 
 def _lparam_keydown(vk: int) -> int:
@@ -35,6 +36,11 @@ class KeySender:
         self._mode = str(keys_cfg.get("mode", "foreground")).lower()
         self._hold = float(keys_cfg.get("key_hold_sec", 0.02))
         self._delay = max(0.0, float(keys_cfg.get("press_delay_sec", 0.0)))
+        raw_delay_by = keys_cfg.get("press_delay_sec_by_lane")
+        if isinstance(raw_delay_by, list) and len(raw_delay_by) == 4:
+            self._delay_by_lane = [max(0.0, float(v)) if v is not None else self._delay for v in raw_delay_by]
+        else:
+            self._delay_by_lane = [self._delay, self._delay, self._delay, self._delay]
         self._hwnd = hwnd
         self._win32_dispatch = str(keys_cfg.get("win32_dispatch", "post")).lower()
         self._fake_activate = bool(keys_cfg.get("fake_activate", True))
@@ -119,6 +125,35 @@ class KeySender:
             self._hold,
             self._mode,
         )
+
+    def send_escape(self) -> None:
+        vk = _VK_ESCAPE
+        if self._mode == "background":
+            if not self._hwnd:
+                logger.error("后台模式需要有效 hwnd")
+                return
+            l_down = _lparam_keydown(vk)
+            l_up = _lparam_keyup(vk)
+            try:
+                if self._win32_dispatch == "send":
+                    win32gui.SendMessage(self._hwnd, win32con.WM_KEYDOWN, vk, l_down)
+                    time.sleep(self._hold)
+                    win32gui.SendMessage(self._hwnd, win32con.WM_KEYUP, vk, l_up)
+                else:
+                    win32gui.PostMessage(self._hwnd, win32con.WM_KEYDOWN, vk, l_down)
+                    time.sleep(self._hold)
+                    win32gui.PostMessage(self._hwnd, win32con.WM_KEYUP, vk, l_up)
+            except Exception as e:
+                logger.error("后台 ESC 失败: %s", e)
+            return
+        try:
+            kb = self._ensure_kb()
+            from pynput.keyboard import Key
+            kb.press(Key.esc)
+            time.sleep(self._hold)
+            kb.release(Key.esc)
+        except Exception as e:
+            logger.error("pynput ESC 失败: %s", e)
 
 
 class _BatchItem:
@@ -210,10 +245,12 @@ class AsyncKeyDispatcher:
         sorted_lanes = sorted(item.lanes)
         fire_times: dict[int, float] = {}
         for i in sorted_lanes:
+            lane_delay = sender._delay_by_lane[i] if i < len(sender._delay_by_lane) else sender._delay
+            if lane_delay > 0:
+                time.sleep(lane_delay)
             sender.send_keydown(i)
             fire_times[i] = time.perf_counter()
-        time.sleep(sender._hold)
-        for i in sorted_lanes:
+            time.sleep(sender._hold)
             sender.send_keyup(i)
         with self._lock:
             self._fire_time_queue.append(fire_times)
