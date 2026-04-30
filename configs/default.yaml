@@ -86,14 +86,6 @@ presence:
   arm_after_good_frames: 1
   # 连续多少帧不达标则重新禁止按键（离开节奏页）
   disarm_after_bad_frames: 5
-  # 帧间动态检测：演奏中音符下落导致持续帧间变化；结束/选歌界面静态无变化
-  dynamic_check_enabled: true
-  # 每条轨道观察条带内帧间像素变化率超过此值认为该轨有音符动态
-  dynamic_change_ratio_threshold: 0.012
-  # 至少多少条轨有动态才认为场景是「演奏中」（1 即任一轨有动态即可）
-  dynamic_min_active_lanes: 1
-  # absdiff 像素强度阈值（越低越敏感，12≈对轻微亮度波动也响应）
-  dynamic_absdiff_threshold: 12
 
 # 场景状态检测：识别 OTHER / SONG_SELECT / PLAYING / RESULTS 四种游戏界面
 # 子模块模板匹配：将 assets/scene_templates/<kind>/ 下每张图片视为独立子模块（按钮/图标/标签），
